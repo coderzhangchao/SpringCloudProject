@@ -1,0 +1,163 @@
+***************************Ribbon负载均衡**********************************
+1、Ribbon负载均衡的规则：
+	RoundRobinRule： 轮询
+	RandomRule: 随机
+	AvailabilityFilteringRule
+	WeightedResponseTimeRule
+	RetryRule
+	BestAvailableRule
+	ZoneAvoidanceRule
+
+默认使用*轮询*规则
+
+2、修改规则
+在客户端的配置类型添加Bean:
+@Configuration
+public class ConfigBean {
+	
+	/**
+	 * Spring Cloud Ribbon是基于Netflix Ribbon实现的一套客户端       负载均衡的工具。
+	 * @return
+	 */
+	@Bean
+	@LoadBalanced
+	public RestTemplate getRestTemplate()
+	{
+		return new RestTemplate();
+	}
+	
+	/**
+	 * 自定义路由规则，将轮训改为随机
+	 * @return
+	 */
+	@Bean
+	public IRule myRule()
+	{
+		return new RandomRule();//达到的目的，用我们重新选择的随机算法替代默认的轮询。
+	}
+}
+
+3、Ribbon的自定义
+
+1) 在@ComponentScan所不能扫描的包下面创建配置类
+
+package com.atguigu.myrule;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import com.netflix.loadbalancer.IRule;
+import com.netflix.loadbalancer.RoundRobinRule;
+
+@Configuration
+public class MySelfRule
+{
+	@Bean
+	public IRule myRule()
+	{
+		return new RandomRule();// Ribbon默认是轮询，我自定义为随机
+	}
+}
+
+2）在主启动类上面标注哪个微服务启用哪个自定义的规则
+
+@SpringBootApplication
+@EnableEurekaClient
+//在启动该微服务的时候就能去加载我们的自定义Ribbon配置类，从而使配置生效
+@RibbonClient(name="MICROSERVICECLOUD-DEPT",configuration=MySelfRule.class)
+public class DeptConsumer80_App
+{
+	public static void main(String[] args)
+	{
+		SpringApplication.run(DeptConsumer80_App.class, args);
+	}
+}
+
+问题：依旧轮询策略，但是加上新需求，每个服务器要求被调用5次。
+也即以前是每台机器一次，现在是每台机器5次。
+public class RandomRule_ZY extends AbstractLoadBalancerRule
+{
+	
+	private int total = 0; 			// 总共被调用的次数，目前要求每台被调用5次
+	private int currentIndex = 0;	// 当前提供服务的机器号
+
+	public Server choose(ILoadBalancer lb, Object key)
+	{
+		if (lb == null) {
+			return null;
+		}
+		Server server = null;
+
+		while (server == null) {
+			if (Thread.interrupted()) {
+				return null;
+			}
+			List<Server> upList = lb.getReachableServers();
+			List<Server> allList = lb.getAllServers();
+
+			int serverCount = allList.size();
+			if (serverCount == 0) {
+				/*
+				 * No servers. End regardless of pass, because subsequent passes only get more
+				 * restrictive.
+				 */
+				return null;
+			}
+
+            if(total < 5)
+            {
+	            server = upList.get(currentIndex);
+	            total++;
+            }else {
+	            total = 0;
+	            currentIndex++;
+	            if(currentIndex >= upList.size())
+	            {
+	              currentIndex = 0;
+	            }
+            }			
+			
+			
+			if (server == null) {
+				/*
+				 * The only time this should happen is if the server list were somehow trimmed.
+				 * This is a transient condition. Retry after yielding.
+				 */
+				Thread.yield();
+				continue;
+			}
+
+			if (server.isAlive()) {
+				return (server);
+			}
+
+			// Shouldn't actually happen.. but must be transient or a bug.
+			server = null;
+			Thread.yield();
+		}
+
+		return server;
+
+	}
+
+	@Override
+	public Server choose(Object key)
+	{
+		return choose(getLoadBalancer(), key);
+	}
+
+	@Override
+	public void initWithNiwsConfig(IClientConfig clientConfig)
+	{
+		// TODO Auto-generated method stub
+
+	}
+}
+
+@Configuration
+public class MySelfRule
+{
+	@Bean
+	public IRule myRule()
+	{	
+		return new RandomRule_ZY();// 我自定义为每台机器5次
+	}
+}
